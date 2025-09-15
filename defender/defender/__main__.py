@@ -7,6 +7,7 @@ from defender.models.ember_model import StatefulNNEmberModel
 from defender.models.nfs_behemot_model import NFSBehemotModel
 from defender.models.nfs_model import PEAttributeExtractor, NFSModel, NeedForSpeedModel
 from defender.models.simple_bert_model import SimpleBERTMalwareModel
+from defender.models.reliable_nn_model import ReliableNNMalwareModel
 
 if __name__ == "__main__":
     # retrive config values from environment variables
@@ -31,9 +32,10 @@ if __name__ == "__main__":
     # model = NFSModel(open(os.path.dirname(__file__) + "/models/nfs_full.pickle", "rb"))
     # model = NFSModel(open(os.path.dirname(__file__) + "/models/nfs_libraries_functions_nostrings.pickle", "rb"))
     
-    # Use Simple BERT-inspired malware detection model
-    simple_bert_model_path = os.path.join(os.path.dirname(__file__), "models/simple_bert_model.pkl")
-    model = SimpleBERTMalwareModel(model_path=simple_bert_model_path, thresh=model_thresh, name="Simple-BERT-Malware-Detector")
+    # Use Reliable Neural Network malware detection model
+    reliable_nn_model_path = os.path.join(os.path.dirname(__file__), "models/reliable_nn_model.pkl")
+    # Use a much lower threshold to reduce false negatives - 0.3 instead of 0.8336
+    model = ReliableNNMalwareModel(model_path=reliable_nn_model_path, thresh=0.3, name="Reliable-NN-Malware-Detector")
 
     app = create_app(model)
 
