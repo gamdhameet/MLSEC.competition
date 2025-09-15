@@ -6,3 +6,14 @@ annoy
 numpy
 tqdm
 pefile
+flask>=1.1.2
+gevent>=1.4.0
+envparse
+annoy
+pefile
+tqdm
+numpy>=2.0.0
+pandas
+scikit-learn
+lief
+lightgbm

@@ -1,4 +1,4 @@
-FROM python:3.7-slim
+FROM python:3.9-slim
 
 #############################
 # INSTALL PYTHON DEPENDENCIES
@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r docker-requirements.txt \
 #############################
 
 # rebase to make a smaller image
-FROM python:3.7-slim
+FROM python:3.9-slim
 
 # required libgomp1 for ember
 RUN apt-get -o Acquire::Max-FutureTime=100000 update \
