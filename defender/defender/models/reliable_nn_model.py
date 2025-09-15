@@ -253,49 +253,29 @@ class ReliableNNMalwareModel:
         try:
             model_dir = os.path.dirname(self.model_path) if self.model_path else os.path.join(os.path.dirname(__file__))
             
-            # Debug logging
-            logger.info(f"Loading model from directory: {model_dir}")
-            logger.info(f"Model path provided: {self.model_path}")
-            logger.info(f"Current working directory: {os.getcwd()}")
-            
             # Load TF-IDF vectorizer
             tfidf_path = os.path.join(model_dir, 'reliable_tfidf_vectorizer.pkl')
-            logger.info(f"Looking for TF-IDF at: {tfidf_path}")
             if os.path.exists(tfidf_path):
                 with open(tfidf_path, 'rb') as f:
                     self.tfidf_vectorizer = pickle.load(f)
-                logger.info("✓ TF-IDF vectorizer loaded successfully")
-            else:
-                logger.warning(f"✗ TF-IDF vectorizer not found at {tfidf_path}")
             
             # Load scaler
             scaler_path = os.path.join(model_dir, 'reliable_scaler.pkl')
-            logger.info(f"Looking for scaler at: {scaler_path}")
             if os.path.exists(scaler_path):
                 with open(scaler_path, 'rb') as f:
                     self.scaler = pickle.load(f)
-                logger.info("✓ Scaler loaded successfully")
-            else:
-                logger.warning(f"✗ Scaler not found at {scaler_path}")
             
             # Load neural network model
             nn_model_path = os.path.join(model_dir, 'reliable_nn_model.pkl')
-            logger.info(f"Looking for NN model at: {nn_model_path}")
             if os.path.exists(nn_model_path):
                 with open(nn_model_path, 'rb') as f:
                     self.model = pickle.load(f)
-                logger.info("✓ Neural network model loaded successfully")
-            else:
-                logger.warning(f"✗ Neural network model not found at {nn_model_path}")
             
             if self.model and self.tfidf_vectorizer and self.scaler:
                 self.is_loaded = True
                 logger.info(f"Successfully loaded reliable NN model from {model_dir}")
             else:
                 logger.warning("Some model components missing, using heuristic-based detection")
-                logger.warning(f"Model loaded: {self.model is not None}")
-                logger.warning(f"TF-IDF loaded: {self.tfidf_vectorizer is not None}")
-                logger.warning(f"Scaler loaded: {self.scaler is not None}")
                 
         except Exception as e:
             logger.error(f"Error loading model components: {e}")

@@ -5,7 +5,7 @@ envparse
 annoy
 pefile
 tqdm
-numpy
+numpy>=2.0.0
 pandas
 scikit-learn
 lief
