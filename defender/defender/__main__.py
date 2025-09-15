@@ -5,8 +5,8 @@ from defender.apps import create_app
 # CUSTOMIZE: import model to be used
 from defender.models.ember_model import StatefulNNEmberModel
 from defender.models.nfs_behemot_model import NFSBehemotModel
-from defender.models.nfs_commite_model import NFSCommiteBehemotModel
 from defender.models.nfs_model import PEAttributeExtractor, NFSModel, NeedForSpeedModel
+from defender.models.simple_bert_model import SimpleBERTMalwareModel
 
 if __name__ == "__main__":
     # retrive config values from environment variables
@@ -28,9 +28,12 @@ if __name__ == "__main__":
     #                              model_name)
     
     # model = NFSBehemotModel()
-    # model = NFSCommiteBehemotModel()
-    model = NFSModel(open(os.path.dirname(__file__) + "/models/nfs_full.pickle", "rb"))
+    # model = NFSModel(open(os.path.dirname(__file__) + "/models/nfs_full.pickle", "rb"))
     # model = NFSModel(open(os.path.dirname(__file__) + "/models/nfs_libraries_functions_nostrings.pickle", "rb"))
+    
+    # Use Simple BERT-inspired malware detection model
+    simple_bert_model_path = os.path.join(os.path.dirname(__file__), "models/simple_bert_model.pkl")
+    model = SimpleBERTMalwareModel(model_path=simple_bert_model_path, thresh=model_thresh, name="Simple-BERT-Malware-Detector")
 
     app = create_app(model)
 
