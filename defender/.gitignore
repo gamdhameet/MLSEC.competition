@@ -1,0 +1,42 @@
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+lief_0_17_0_venv/
+venv/
+env/
+
+# Data
+data/
+results/
+logs/
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+*.tar
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Backup files
+*.bak
+*.backup
+*_old.*
