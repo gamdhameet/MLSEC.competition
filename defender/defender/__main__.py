@@ -2,19 +2,19 @@ import os
 import envparse
 from defender.apps import create_app
 
-# Random Forest Model Only
-from defender.models.random_forest_model import RandomForestMalwareModel
+# Advanced LightGBM Model with Enhanced Features
+from defender.models.advanced_model import AdvancedMalwareModel
 
 if __name__ == "__main__":
-    # Get threshold from environment variable (default: 0.21 optimized threshold)
-    model_thresh = envparse.env("DF_MODEL_THRESH", cast=float, default=0.21)
+    # Get threshold from environment variable (default: 0.80 optimized for FPR < 1%)
+    model_thresh = envparse.env("DF_MODEL_THRESH", cast=float, default=0.80)
     
-    # Load Random Forest model
-    rf_model_path = os.path.join(os.path.dirname(__file__), "models/random_forest_model.pkl")
-    model = RandomForestMalwareModel(
-        model_path=rf_model_path, 
+    # Load Advanced LightGBM model
+    adv_model_path = os.path.join(os.path.dirname(__file__), "models/advanced_model.pkl")
+    model = AdvancedMalwareModel(
+        model_path=adv_model_path, 
         thresh=model_thresh, 
-        name="Random-Forest-Detector"
+        name="Advanced-LightGBM-Detector"
     )
 
     app = create_app(model)

@@ -2,7 +2,7 @@
 """
 Threshold Optimization Script
 
-Analyzes model predictions on challenge dataset to find optimal thresholds
+Analyzes model predictions on test dataset to find optimal thresholds
 that meet FPR < 1% and FNR < 10% requirements.
 """
 
