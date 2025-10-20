@@ -1,13 +1,12 @@
 #Model's takes these steps: 
 #1.Take the raw PE bytes then checks the outside where it looks at things such as how random the data looks, how well the bytes compress, how much it looks like a base64 character string, etc. 
-#2.If enough red flags are given + it then does in inside check where it tries to pull any payloads that is inside the PE file
+#2.If enough red flags are given,it then does in inside check where it tries to pull any payloads that is inside the PE file
 #3.summarizes the outside and inside into numerical fingerprints
 #4.scores them with a heuristic ratio that outputs a probability
 #5.Makes a verdict based on that score
 
 import os, zlib, base64, time
 from typing import List, Tuple, Optional
-
 import numpy as np
 
 
@@ -20,6 +19,11 @@ MAX_CANDIDATES  = int(os.getenv("MAX_CANDIDATES", "4"))
 DECISION = float(os.getenv("DECISION", "0.60"))
 # Optional: point to a sklearn pickle with {"scaler":..., "classifier":..., "threshold":...}
 MODEL_PATH = os.getenv("MODEL_PATH", "")  # leave empty to use heuristic
+
+_loaded = False
+_scaler = None
+_clf = None
+_threshold = DECISION  
 
 
 #These functions are used both for outside and inside processes and measure basic bayte-level properties
@@ -195,7 +199,7 @@ def score_with_model(X: np.ndarray) -> float:
     return float(_clf.predict(Xs)[0])  # 0/1 fallback
 
 
-# This is wher the model actually does its thing now that we have all of the functions it will use
+# This is where the model actually does its thing now that we have all of the functions it will use
 class DropperAwareModel:
     def __init__(self):
         # you could read env here if needed
