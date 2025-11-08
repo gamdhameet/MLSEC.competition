@@ -1,2 +1,1 @@
-docker pull defender:latest
-
+docker pull gamdhameet/defender:latest

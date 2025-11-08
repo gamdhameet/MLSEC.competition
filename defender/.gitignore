@@ -40,3 +40,7 @@ logs/
 *.bak
 *.backup
 *_old.*
+
+
+defense_report.md
+defense_report.pdf
