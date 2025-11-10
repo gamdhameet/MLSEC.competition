@@ -9,6 +9,15 @@ import os, zlib, base64, time
 from typing import List, Tuple, Optional
 import numpy as np
 
+# ======== ADDED: optional dependencies and helpers (safe to ignore if not available) ========
+import re
+import pickle
+import lzma
+
+try:
+    import pefile  # optional: for your own local experiments if you want to extend features later
+except Exception:
+    pefile = None
 
 # Parameters to meet the challenge requirements
 MAX_BYTES       = int(os.getenv("MAX_BYTES", str(2**21)))   # 2 MiB
@@ -25,6 +34,27 @@ _scaler = None
 _clf = None
 _threshold = DECISION  
 
+# ======== ADDED: load sklearn model if provided (keeps your params; uses them only if MODEL_PATH set) ========
+def _load_model(path: str):
+    global _loaded, _scaler, _clf, _threshold
+    if not path:
+        return
+    try:
+        with open(path, "rb") as fh:
+            obj = pickle.load(fh)
+        if isinstance(obj, dict):
+            _scaler = obj.get("scaler", None)
+            _clf = obj.get("classifier", obj.get("clf", None))
+            _threshold = float(obj.get("threshold", DECISION))
+        else:
+            # allow pickle of a bare estimator
+            _clf = obj
+        _loaded = _clf is not None
+    except Exception:
+        _loaded = False
+
+if MODEL_PATH:
+    _load_model(MODEL_PATH)
 
 #These functions are used both for outside and inside processes and measure basic bayte-level properties
 def entropy(b: bytes) -> float: #Sees how random the data looks
@@ -76,6 +106,75 @@ def suspicious(blob: bytes) -> bool: #This suspicious function just decides if t
     has_tags = (b"RESZ" in blob) or (b"PACK:" in blob) or (b"BASE64:" in blob) or looks_like_base64_chunk(blob)
     return (ent > 7.2) or (pr < 0.25) or (cr > 0.95) or (mzs >= 2) or has_tags
 
+# ======== ADDED: safe decompress helpers & extra decoders to catch more dropper tricks ========
+_MAX_DECOMP = 5 * 1024 * 1024  # safety cap for decompression bombs
+
+def _safe_zlib(data: bytes) -> Optional[bytes]:
+    try:
+        out = zlib.decompress(data)
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        pass
+    return None
+
+def _safe_lzma(data: bytes) -> Optional[bytes]:
+    try:
+        out = lzma.decompress(data)
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        pass
+    return None
+
+def _safe_gzip(data: bytes) -> Optional[bytes]:
+    try:
+        import gzip
+        out = gzip.decompress(data)
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        pass
+    return None
+
+def _try_b64_long(blob: bytes) -> Optional[bytes]:
+    m = re.search(rb"([A-Za-z0-9+/=\r\n]{120,})", blob)
+    if not m: return None
+    s = m.group(1)
+    try:
+        out = base64.b64decode(s, validate=True)
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        return None
+    return None
+
+def _try_b64_url(blob: bytes) -> Optional[bytes]:
+    m = re.search(rb"([A-Za-z0-9_\-]{120,})", blob)
+    if not m: return None
+    s = m.group(1)
+    try:
+        out = base64.urlsafe_b64decode(s + b'=' * (-len(s) % 4))
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        return None
+    return None
+
+def _try_hex(blob: bytes) -> Optional[bytes]:
+    m = re.search(rb"([0-9a-fA-F]{128,})", blob)
+    if not m: return None
+    s = m.group(1)
+    try:
+        out = bytes.fromhex(s.decode("ascii"))
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        return None
+    return None
+
+def _try_gzip_lzma(blob: bytes) -> Optional[bytes]:
+    return _safe_gzip(blob) or _safe_lzma(blob)
 
 # Bounded extraction (inside peek) 
 #These are functions that will be used if suspicious if activated and tries to pull hidden payloads that may be in a dropper through trial and error
@@ -130,6 +229,49 @@ def try_pack(blob: bytes) -> Optional[bytes]: #See if we have "PACK:" then decod
     except Exception:
         return None
 
+# ======== ADDED: extra candidate helpers (kept separate so your originals remain untouched) ========
+def _try_pack_safe(blob: bytes) -> Optional[bytes]:
+    idx = blob.find(b"PACK:")
+    if idx == -1: return None
+    st = idx + len(b"PACK:")
+    ed = blob.find(b"\n", st)
+    if ed == -1: ed = len(blob)
+    try:
+        inner = base64.b64decode(blob[st:ed], validate=True)
+        return _safe_zlib(inner) or _safe_lzma(inner) or inner
+    except Exception:
+        return None
+
+def _try_b64_line_safe(blob: bytes) -> Optional[bytes]:
+    idx = blob.find(b"BASE64:")
+    if idx == -1: return None
+    st = idx + len(b"BASE64:")
+    ed = blob.find(b"\n", st)
+    if ed == -1: ed = len(blob)
+    try:
+        out = base64.b64decode(blob[st:ed], validate=True)
+        if len(out) <= _MAX_DECOMP:
+            return out
+    except Exception:
+        return None
+    return None
+
+def _try_xor_guess(blob: bytes) -> Optional[bytes]:
+    # light repeating-XOR guesser (bounded to MZ_SLICE_LEN for speed)
+    sample = blob[:min(len(blob), MZ_SLICE_LEN)]
+    best = None
+    best_pr = 0.0
+    for klen in range(1, 9):
+        # heuristic: assume plaintext had many spaces -> guess key from first klen bytes
+        key = bytes([sample[i] ^ 0x20 for i in range(min(klen, len(sample)))])
+        if not key: continue
+        cand = bytes([b ^ key[i % len(key)] for i, b in enumerate(sample)])
+        pr = printable_ratio(cand)
+        if pr > 0.30 and pr > best_pr:
+            best = cand
+            best_pr = pr
+    return best
+
 def extract_candidates(blob: bytes, max_cands:int=MAX_CANDIDATES) -> List[Tuple[bytes, str]]:
     cands: List[Tuple[bytes, str]] = []
     # 1) Short slices at MZ (bounded) — typical for embedded executables
@@ -143,11 +285,25 @@ def extract_candidates(blob: bytes, max_cands:int=MAX_CANDIDATES) -> List[Tuple[
         if out:
             cands.append((out, name))
             if len(cands) >= max_cands: return cands
+    # ======== ADDED: more decoders below while keeping your originals above ========
+    for fn, name in ((_try_b64_line_safe,"b64_line_safe"),
+                     (_try_b64_long,"b64_long"),
+                     (_try_b64_url,"b64_url"),
+                     (_try_hex,"hex"),
+                     (_try_pack_safe,"pack_safe"),
+                     (_try_gzip_lzma,"gzip_lzma"),
+                     (_try_xor_guess,"xor_guess")):
+        try:
+            out = fn(blob)
+        except Exception:
+            out = None
+        if out:
+            cands.append((out, name))
+            if len(cands) >= max_cands: return cands
     # Fallback: raw blob
     if not cands:
         cands.append((blob, "raw"))
     return cands
-
 
 # Feature extraction
 def byte_histogram(b: bytes, bins:int=16) -> np.ndarray:
@@ -161,6 +317,9 @@ def byte_histogram(b: bytes, bins:int=16) -> np.ndarray:
 def suspicious_string_count(b: bytes) -> float: #counts how many suspicious substrings exist, likely can be expanded as we can put in more
     c = 0.0
     for t in (b"cmd.exe", b"powershell", b"rundll32", b"regsvr32", b"certutil", b"bitsadmin"):
+        if t in b: c += 1.0
+    # ======== ADDED: a few more without changing your interface (still a float count) ========
+    for t in (b"VirtualAlloc", b"VirtualProtect", b"CreateRemoteThread", b"LoadLibrary", b"PowerShell -"):
         if t in b: c += 1.0
     return c
 
@@ -183,7 +342,8 @@ def score_with_model(X: np.ndarray) -> float:
     """Return P(malicious) in [0,1]. Uses a simple heuristic.""" 
     #The scores can be changed depending on how important some of these parameters are
     if not _loaded:
-        # increase with entropy and hard-to-compress, decrease with high printable ratio
+        # ======== CHANGED: still a simple heuristic, but now also considers the "inside" half if present
+        # outside
         ent, pr, cr, mzs, sus = float(X[0,1]), float(X[0,2]), float(X[0,3]), float(X[0,4]), float(X[0,5])
         score = 0.0
         if ent > 7.2: score += 0.5
@@ -191,13 +351,20 @@ def score_with_model(X: np.ndarray) -> float:
         if pr  < 0.25: score += 0.2
         if mzs >= 2:   score += 0.1
         if sus > 0:    score += 0.1
+        # inside (indices 22..43 mirror 0..21)
+        i_ent, i_pr, i_cr, i_mzs, i_sus = float(X[0,23]), float(X[0,24]), float(X[0,25]), float(X[0,26]), float(X[0,27])
+        # add a smaller weight for the inside signals
+        if i_ent > 7.2: score += 0.15
+        if i_cr  > 0.95: score += 0.05
+        if i_pr  < 0.25: score += 0.05
+        if i_mzs >= 1:   score += 0.05
+        if i_sus > 0:    score += 0.05
         return max(0.0, min(1.0, score))
     # sklearn path
     Xs = _scaler.transform(X) if _scaler is not None else X
     if hasattr(_clf, "predict_proba"):
         return float(_clf.predict_proba(Xs)[0, 1])
     return float(_clf.predict(Xs)[0])  # 0/1 fallback
-
 
 # This is where the model actually does its thing now that we have all of the functions it will use
 class DropperAwareModel:
@@ -218,12 +385,15 @@ class DropperAwareModel:
         # Only peek inside if it looks like a dropper and we have time
         if suspicious(bytez):
             best_ent = -1.0
+            # ======== CHANGED: use improved extractor above (which still includes all your original decoders)
             for cand, _name in extract_candidates(bytez, max_cands=MAX_CANDIDATES):
                 if time.monotonic() - t0 > TIME_BUDGET_SEC:
                     break
                 e = entropy(cand)
-                if e > best_ent:
-                    best_ent = e
+                # ======== CHANGED: tie-break with suspicious strings to prefer "spicier" candidates
+                tie = suspicious_string_count(cand) * 0.05 - printable_ratio(cand) * 0.02
+                if (e + tie) > best_ent:
+                    best_ent = e + tie
                     inside_best = cand
 
         # Build features (outside + best-inside)
@@ -247,7 +417,14 @@ def _extract_candidates_impl(blob: bytes, max_cands:int) -> List[Tuple[bytes, st
         end = min(len(blob), off + MZ_SLICE_LEN)
         cands.append((blob[off:end], f"mz_{off}"))
         if len(cands) >= max_cands: return cands
-    for fn, name in ((try_resz,"resz"), (try_b64,"b64"), (try_xor,"xor"), (try_pack,"pack")):
+    for fn, name in ((try_resz,"resz"), (try_b64,"b64"), (try_xor,"xor"), (try_pack,"pack"),
+                     (_try_b64_line_safe,"b64_line_safe"),
+                     (_try_b64_long,"b64_long"),
+                     (_try_b64_url,"b64_url"),
+                     (_try_hex,"hex"),
+                     (_try_pack_safe,"pack_safe"),
+                     (_try_gzip_lzma,"gzip_lzma"),
+                     (_try_xor_guess,"xor_guess")):
         out = fn(blob)
         if out:
             cands.append((out, name))
