@@ -1,0 +1,19 @@
+{
+  "summary": {
+    "total_tested": 1,
+    "malware_count": 1,
+    "benign_count": 0,
+    "error_count": 0
+  },
+  "results": [
+    {
+      "file_id": 1,
+      "file_path": ".\\1.exe",
+      "prediction": 1,
+      "label": "malware",
+      "probability": 0.92,
+      "threshold": 0.6
+    }
+  ],
+  "errors": []
+}

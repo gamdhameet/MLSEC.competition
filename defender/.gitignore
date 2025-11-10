@@ -13,7 +13,7 @@ build/
 
 # Virtual environments
 lief_0_17_0_venv/
-venv/
+venv_312/
 env/
 
 # Data
