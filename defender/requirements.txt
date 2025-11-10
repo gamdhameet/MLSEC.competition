@@ -17,3 +17,5 @@ pandas
 scikit-learn
 lief
 lightgbm
+pandas
+xgboost
