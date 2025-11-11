@@ -1,8 +1,8 @@
 """
-Decision Tree Malware Detection Model
+Random Forest Ensemble Malware Detection Model
 
-This model uses sklearn's DecisionTreeClassifier for malware detection.
-Optimized for Docker deployment with very fast inference.
+This model uses an ensemble of Random Forest classifiers for malware detection.
+Optimized for Docker deployment with good balance of accuracy and inference speed.
 """
 
 import os
@@ -10,26 +10,26 @@ import pickle
 import numpy as np
 import logging
 from typing import Dict, Any
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class DecisionTreeMalwareModel:
-    """Decision Tree based malware detection model compatible with defender framework"""
+class RFEnsembleMalwareModel:
+    """Random Forest Ensemble based malware detection model compatible with defender framework"""
     
     def __init__(self, 
                  model_path: str = None,
                  thresh: float = 0.5,
-                 name: str = 'Decision-Tree-Malware-Detector'):
+                 name: str = 'RF-Ensemble-Malware-Detector'):
         self.thresh = thresh
         self.__name__ = name
         self.model_path = model_path
         
         # Initialize components
-        self.model = None
+        self.models = None  # List of RF models
         self.scaler = None
         self.feature_names = None
         self.is_loaded = False
@@ -39,41 +39,41 @@ class DecisionTreeMalwareModel:
             self._load_model_components()
     
     def _load_model_components(self):
-        """Load the Decision Tree model and preprocessing components"""
+        """Load the Random Forest ensemble and preprocessing components"""
         try:
             model_dir = os.path.dirname(self.model_path) if self.model_path else os.path.join(os.path.dirname(__file__))
             
             # Load scaler
-            scaler_path = os.path.join(model_dir, 'dt_scaler.pkl')
+            scaler_path = os.path.join(model_dir, 'rf_scaler.pkl')
             if os.path.exists(scaler_path):
                 with open(scaler_path, 'rb') as f:
                     self.scaler = pickle.load(f)
                 logger.info(f"Loaded scaler from {scaler_path}")
             
             # Load feature names
-            feature_names_path = os.path.join(model_dir, 'dt_features.pkl')
+            feature_names_path = os.path.join(model_dir, 'rf_features.pkl')
             if os.path.exists(feature_names_path):
                 with open(feature_names_path, 'rb') as f:
                     self.feature_names = pickle.load(f)
                 logger.info(f"Loaded {len(self.feature_names)} feature names")
             
-            # Load Decision Tree model
-            dt_model_path = os.path.join(model_dir, 'dt_single_aggressive.pkl')
-            if os.path.exists(dt_model_path):
-                with open(dt_model_path, 'rb') as f:
-                    self.model = pickle.load(f)
-                logger.info(f"Loaded Decision Tree model from {dt_model_path}")
+            # Load Random Forest ensemble models
+            rf_model_path = os.path.join(model_dir, 'rf_ensemble_models.pkl')
+            if os.path.exists(rf_model_path):
+                with open(rf_model_path, 'rb') as f:
+                    self.models = pickle.load(f)
+                logger.info(f"Loaded {len(self.models) if isinstance(self.models, list) else 1} RF models from {rf_model_path}")
             
             # Load threshold
-            thresh_path = os.path.join(model_dir, 'dt_best_threshold.pkl')
+            thresh_path = os.path.join(model_dir, 'rf_threshold.pkl')
             if os.path.exists(thresh_path):
                 with open(thresh_path, 'rb') as f:
                     self.thresh = pickle.load(f)
                 logger.info(f"Loaded threshold: {self.thresh}")
             
-            if self.model and self.scaler and self.feature_names:
+            if self.models and self.scaler and self.feature_names:
                 self.is_loaded = True
-                logger.info(f"Successfully loaded Decision Tree model components")
+                logger.info(f"Successfully loaded Random Forest ensemble components")
             else:
                 logger.warning("Some model components missing, using heuristic-based detection")
                 
@@ -141,15 +141,25 @@ class DecisionTreeMalwareModel:
             if features is None:
                 return self._heuristic_prediction(bytez)
             
-            # Make prediction
-            prediction_proba = self.model.predict_proba(features)[0]
-            prediction = int(prediction_proba[1] > self.thresh)
+            # Make predictions with ensemble
+            if isinstance(self.models, list):
+                # Average predictions from multiple models
+                predictions = []
+                for model in self.models:
+                    pred_proba = model.predict_proba(features)[0]
+                    predictions.append(pred_proba[1])
+                avg_proba = np.mean(predictions)
+            else:
+                # Single model
+                avg_proba = self.models.predict_proba(features)[0][1]
             
-            logger.info(f"Decision Tree Prediction: {prediction} (confidence: {prediction_proba[1]:.4f}, threshold: {self.thresh})")
+            prediction = int(avg_proba > self.thresh)
+            
+            logger.info(f"RF Ensemble Prediction: {prediction} (confidence: {avg_proba:.4f}, threshold: {self.thresh})")
             return prediction
             
         except Exception as e:
-            logger.error(f"Error during Decision Tree prediction: {e}")
+            logger.error(f"Error during RF Ensemble prediction: {e}")
             return self._heuristic_prediction(bytez)
     
     def _heuristic_prediction(self, bytez: bytes) -> int:
@@ -211,15 +221,20 @@ class DecisionTreeMalwareModel:
             "thresh": self.thresh,
             "model_path": self.model_path,
             "is_loaded": self.is_loaded,
-            "model_type": "sklearn DecisionTreeClassifier",
+            "model_type": "sklearn RandomForestClassifier Ensemble",
         }
         
-        if self.is_loaded and self.model:
-            info.update({
-                "max_depth": getattr(self.model, 'max_depth', 'N/A'),
-                "n_features": len(self.feature_names) if self.feature_names else 'N/A',
-                "n_leaves": getattr(self.model, 'get_n_leaves', lambda: 'N/A')(),
-            })
+        if self.is_loaded and self.models:
+            if isinstance(self.models, list):
+                info.update({
+                    "n_models": len(self.models),
+                    "n_features": len(self.feature_names) if self.feature_names else 'N/A',
+                })
+            else:
+                info.update({
+                    "n_estimators": getattr(self.models, 'n_estimators', 'N/A'),
+                    "n_features": len(self.feature_names) if self.feature_names else 'N/A',
+                })
         
         return info
 

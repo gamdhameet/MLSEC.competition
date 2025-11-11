@@ -1,0 +1,44 @@
+# Docker Pull Commands for MLSEC Defender Models
+
+## Decision Tree Model
+docker pull gamdhameet/gamdhameet-dt:latest
+
+## Random Forest Ensemble Model
+docker pull gamdhameet/gamdhameet-rf:latest
+
+## XGBoost Model
+docker pull gamdhameet/gamdhameet-xgb:latest
+
+# To run the containers:
+
+## Decision Tree
+docker run -itp 8080:8080 --memory=1.5g --cpus=1 gamdhameet/gamdhameet-dt:latest
+
+## Random Forest Ensemble
+docker run -itp 8080:8080 --memory=1.5g --cpus=1 gamdhameet/gamdhameet-rf:latest
+
+## XGBoost
+docker run -itp 8080:8080 --memory=1.5g --cpus=1 gamdhameet/gamdhameet-xgb:latest
+
+# Test Results Summary:
+
+## Decision Tree (gamdhameet-dt):
+- FP Rate: 0.0%
+- FN Rate: 68.4%
+- Avg Response Time: 0.62s
+
+## Random Forest Ensemble (gamdhameet-rf):
+- FP Rate: 0.0%
+- FN Rate: 74.7%
+- Avg Response Time: 0.82s
+
+## XGBoost (gamdhameet-xgb):
+- FP Rate: 0.0%
+- FN Rate: 85.3%
+- Avg Response Time: 0.61s
+
+# Notes:
+- All models meet the False Positive Rate requirement (<1%)
+- All models currently have high False Negative Rates (>10% requirement)
+- Models may need threshold tuning to improve malware detection rates
+
