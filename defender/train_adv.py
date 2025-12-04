@@ -58,6 +58,292 @@ def extract_features_from_directory(directory: str, label: int, max_files: int =
     
     return features_list, labels_list
 
+from pathlib import Path
+import json
+
+def load_ember2024_samples_json(ember2024_dir: str, max_samples: int | None = None):
+    """
+    Stream EMBER2024 JSONL feature files from ember2024_dir, similar to load_ember_samples,
+    but without using thrember.read_vectorized_features (avoids 40+ GB RAM).
+    """
+    logger.info("Loading EMBER2024 raw JSONL features (streaming)...")
+    ember_path = Path(ember2024_dir)
+
+    # Grab ALL .jsonl files (train/test/challenge/PE types) and let max_samples cap it.
+    jsonl_files = sorted(ember_path.rglob("*.jsonl"))
+    if not jsonl_files:
+        logger.warning(f"No .jsonl files found under {ember2024_dir}")
+        return [], []
+
+    all_features = []
+    all_labels = []
+    loaded = 0
+
+    logger.info(f"Found {len(jsonl_files)} JSONL files under {ember2024_dir}")
+
+    for feature_file in jsonl_files:
+        logger.info(f"Processing EMBER2024 file: {feature_file}")
+        with feature_file.open("r") as f:
+            for line in f:
+                if max_samples is not None and loaded >= max_samples:
+                    logger.info(f"Reached max_samples={max_samples} for EMBER2024")
+                    logger.info(f"Total EMBER2024 samples loaded: {loaded}")
+                    return all_features, all_labels
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    sample = json.loads(line)
+                    label = sample.get("label", -1)
+                    if label not in [0, 1]:
+                        continue
+
+                    features = {}
+
+                    # general block
+                    general = sample.get("general", {})
+                    for k, v in general.items():
+                        if isinstance(v, (int, float)):
+                            features[f"ember3_general_{k}"] = v
+
+                    # header info (PE-like, may or may not exist depending on file type)
+                    header = sample.get("header", {})
+                    coff = header.get("coff", {})
+                    opt = header.get("optional", {})
+
+                    if isinstance(coff, dict):
+                        ts = coff.get("timestamp")
+                        if isinstance(ts, (int, float)):
+                            features["ember3_header_timestamp"] = ts
+
+                    if isinstance(opt, dict):
+                        for key in ("sizeof_code", "sizeof_headers", "sizeof_image"):
+                            val = opt.get(key)
+                            if isinstance(val, (int, float)):
+                                features[f"ember3_header_{key}"] = val
+
+                    # section stats
+                    section = sample.get("section", {})
+                    sections = section.get("sections", [])
+                    if isinstance(sections, list) and sections:
+                        entropies = []
+                        raw_sizes = []
+                        for s in sections:
+                            if not isinstance(s, dict):
+                                continue
+                            ent = s.get("entropy")
+                            size_raw = s.get("size_raw")
+                            if isinstance(ent, (int, float)):
+                                entropies.append(ent)
+                            if isinstance(size_raw, (int, float)):
+                                raw_sizes.append(size_raw)
+
+                        features["ember3_section_count"] = len(sections)
+                        if entropies:
+                            features["ember3_section_avg_entropy"] = float(np.mean(entropies))
+                            features["ember3_section_max_entropy"] = float(np.max(entropies))
+                        if raw_sizes:
+                            features["ember3_section_avg_size_raw"] = float(np.mean(raw_sizes))
+
+                    # strings
+                    strings = sample.get("strings", {})
+                    if isinstance(strings, dict):
+                        for key in ("numstrings", "entropy", "paths", "urls",
+                                    "registry", "suspicious_imports", "suspicious_strings"):
+                            val = strings.get(key)
+                            if isinstance(val, (int, float)):
+                                features[f"ember3_strings_{key}"] = val
+
+                    # imports/exports
+                    imports = sample.get("imports", {})
+                    if isinstance(imports, dict):
+                        features["ember3_import_dll_count"] = len(imports)
+                        features["ember3_import_func_count"] = sum(
+                            len(funcs) for funcs in imports.values()
+                            if isinstance(funcs, list)
+                        )
+
+                    exports = sample.get("exports", [])
+                    if isinstance(exports, list):
+                        features["ember3_export_func_count"] = len(exports)
+
+                    # histogram & byteentropy (same idea as your Ember 2018 loader)
+                    hist = sample.get("histogram")
+                    if isinstance(hist, list) and hist:
+                        features["ember3_hist_mean"] = float(np.mean(hist))
+                        features["ember3_hist_std"] = float(np.std(hist))
+
+                    be = sample.get("byteentropy")
+                    if isinstance(be, list) and be:
+                        features["ember3_byteentropy_mean"] = float(np.mean(be))
+
+                    all_features.append(features)
+                    all_labels.append(label)
+                    loaded += 1
+
+                    if loaded % 5000 == 0:
+                        logger.info(f"Loaded {loaded} EMBER2024 samples so far...")
+
+                except Exception as e:
+                    logger.warning(f"Error parsing EMBER2024 line in {feature_file}: {e}")
+                    continue
+
+    logger.info(f"Total EMBER2024 samples loaded: {loaded}")
+    return all_features, all_labels
+
+def iter_ember2024_samples_json(ember2024_dir: str, chunk_size: int = 50000):
+    """
+    Generator that yields (features_list, labels_list) chunks from EMBER2024 JSONL files.
+    Each chunk has at most `chunk_size` samples.
+    """
+    logger.info("Streaming EMBER2024 JSONL features in chunks...")
+    ember_path = Path(ember2024_dir)
+    jsonl_files = sorted(ember_path.rglob("*.jsonl"))
+
+    if not jsonl_files:
+        logger.warning(f"No .jsonl files found under {ember2024_dir}")
+        return
+
+    logger.info(f"Found {len(jsonl_files)} JSONL files under {ember2024_dir}")
+
+    features_chunk = []
+    labels_chunk = []
+    loaded = 0
+
+    for feature_file in jsonl_files:
+        logger.info(f"Processing EMBER2024 file: {feature_file}")
+        with feature_file.open("r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    sample = json.loads(line)
+                    label = sample.get("label", -1)
+                    if label not in [0, 1]:
+                        continue
+
+                    features = {}
+
+                    # general block
+                    general = sample.get("general", {})
+                    for k, v in general.items():
+                        if isinstance(v, (int, float)):
+                            features[f"ember3_general_{k}"] = v
+
+                    # header info
+                    header = sample.get("header", {})
+                    coff = header.get("coff", {})
+                    opt = header.get("optional", {})
+
+                    if isinstance(coff, dict):
+                        ts = coff.get("timestamp")
+                        if isinstance(ts, (int, float)):
+                            features["ember3_header_timestamp"] = ts
+
+                    if isinstance(opt, dict):
+                        for key in ("sizeof_code", "sizeof_headers", "sizeof_image"):
+                            val = opt.get(key)
+                            if isinstance(val, (int, float)):
+                                features[f"ember3_header_{key}"] = val
+
+                    # section stats
+                    section = sample.get("section", {})
+                    sections = section.get("sections", [])
+                    if isinstance(sections, list) and sections:
+                        entropies = []
+                        raw_sizes = []
+                        for s in sections:
+                            if not isinstance(s, dict):
+                                continue
+                            ent = s.get("entropy")
+                            size_raw = s.get("size_raw")
+                            if isinstance(ent, (int, float)):
+                                entropies.append(ent)
+                            if isinstance(size_raw, (int, float)):
+                                raw_sizes.append(size_raw)
+
+                        features["ember3_section_count"] = len(sections)
+                        if entropies:
+                            features["ember3_section_avg_entropy"] = float(np.mean(entropies))
+                            features["ember3_section_max_entropy"] = float(np.max(entropies))
+                        if raw_sizes:
+                            features["ember3_section_avg_size_raw"] = float(np.mean(raw_sizes))
+
+                    # strings
+                    strings = sample.get("strings", {})
+                    if isinstance(strings, dict):
+                        for key in ("numstrings", "entropy", "paths", "urls",
+                                    "registry", "suspicious_imports", "suspicious_strings"):
+                            val = strings.get(key)
+                            if isinstance(val, (int, float)):
+                                features[f"ember3_strings_{key}"] = val
+
+                    # imports/exports
+                    imports = sample.get("imports", {})
+                    if isinstance(imports, dict):
+                        features["ember3_import_dll_count"] = len(imports)
+                        features["ember3_import_func_count"] = sum(
+                            len(funcs) for funcs in imports.values()
+                            if isinstance(funcs, list)
+                        )
+
+                    exports = sample.get("exports", [])
+                    if isinstance(exports, list):
+                        features["ember3_export_func_count"] = len(exports)
+
+                    # histogram & byteentropy
+                    hist = sample.get("histogram")
+                    if isinstance(hist, list) and hist:
+                        features["ember3_hist_mean"] = float(np.mean(hist))
+                        features["ember3_hist_std"] = float(np.std(hist))
+
+                    be = sample.get("byteentropy")
+                    if isinstance(be, list) and be:
+                        features["ember3_byteentropy_mean"] = float(np.mean(be))
+
+                    features_chunk.append(features)
+                    labels_chunk.append(label)
+                    loaded += 1
+
+                    if len(features_chunk) >= chunk_size:
+                        logger.info(f"Yielding chunk with {len(features_chunk)} EMBER2024 samples (total so far: {loaded})")
+                        yield features_chunk, labels_chunk
+                        features_chunk, labels_chunk = [], []
+
+                except Exception as e:
+                    logger.warning(f"Error parsing EMBER2024 line in {feature_file}: {e}")
+                    continue
+
+    if features_chunk:
+        logger.info(f"Yielding final chunk with {len(features_chunk)} EMBER2024 samples (total: {loaded})")
+        yield features_chunk, labels_chunk
+
+def to_aligned_df(features_list, all_columns=None):
+    """
+    Convert list-of-dicts to DataFrame and align columns.
+    If all_columns is None, infer and return them.
+    Otherwise, add any missing columns as 0 and reorder.
+    """
+    df = pd.DataFrame(features_list)
+    df = df.replace([np.inf, -np.inf], 0).fillna(0)
+
+    if all_columns is None:
+        all_columns = sorted(df.columns)
+        df = df[all_columns]
+        return df, all_columns
+
+    # add missing cols as 0
+    for col in all_columns:
+        if col not in df:
+            df[col] = 0
+
+    # drop any extra cols (shouldn’t normally happen, but for safety)
+    df = df[all_columns]
+    return df, all_columns
 
 def load_ember_samples(ember_dir: str, max_samples: int):
     """Load Ember dataset samples"""
@@ -154,13 +440,22 @@ def load_ember_samples(ember_dir: str, max_samples: int):
     return all_features, all_labels
 
 
-def train_with_challenge(ember_dir: str, ember2017_dir: str, dike_dir: str, challenge_goodware: str, 
-                        challenge_malware: str, ember_samples: int = 30000):
+def train_with_challenge(ember_dir: str, 
+                         ember2017_dir: str, 
+                         dike_dir: str, 
+                         challenge_goodware: str, 
+                         challenge_malware: str, 
+                         ember_samples: int = 30000,
+                         ember2024_dir: str | None = None,
+                         ember2024_samples: int | None = None):
     
     logger.info("=" * 80)
     logger.info("TRAINING WITH CHALLENGE DATASET INCLUDED")
     logger.info("=" * 80)
     
+    # ------------------------------------------------------------------
+    # 1) LOAD CHALLENGE + DIKE + EMBER2018 + EMBER2017 INTO BASE SET
+    # ------------------------------------------------------------------
     all_features = []
     all_labels = []
 
@@ -179,7 +474,6 @@ def train_with_challenge(ember_dir: str, ember2017_dir: str, dike_dir: str, chal
     
     logger.info(f"Challenge dataset: {len(challenge_good_labels)} goodware, {len(challenge_mal_labels)} malware")
     
-    # 2. Load DikeDataset (similar distribution)
     logger.info("\n### Loading DikeDataset ###")
     from pathlib import Path
     dike_path = Path(dike_dir)
@@ -198,52 +492,46 @@ def train_with_challenge(ember_dir: str, ember2017_dir: str, dike_dir: str, chal
     
     logger.info(f"Dike dataset: {len(dike_good_labels)} goodware, {len(dike_mal_labels)} malware")
     
-    # 3. Load Ember samples (for diversity)
-    logger.info(f"\n### Loading {ember_samples} Ember samples ###")
+    logger.info(f"\n### Loading {ember_samples} Ember2018 samples ###")
     ember_feat, ember_labels = load_ember_samples(ember_dir, ember_samples)
-    
     all_features.extend(ember_feat)
     all_labels.extend(ember_labels)
-    
-    logger.info(f"Ember dataset: {len(ember_labels)} samples")
+    logger.info(f"Ember2018 dataset: {len(ember_labels)} samples")
 
-    logger.info(f"\n### Loading {ember_samples} Ember samples ###")
+    logger.info(f"\n### Loading {ember_samples} Ember2017 samples ###")
     ember_feat, ember_labels = load_ember_samples(ember2017_dir, ember_samples)
-    
     all_features.extend(ember_feat)
     all_labels.extend(ember_labels)
+    logger.info(f"Ember2017 dataset: {len(ember_labels)} samples")
     
-    logger.info(f"Ember dataset: {len(ember_labels)} samples")
+    # ------------------------------------------------------------------
+    # 2) BUILD BASE DATAFRAME + TRAIN/TEST SPLIT
+    # ------------------------------------------------------------------
+    logger.info("\n### Preparing Base Features ###")
+    df_base = pd.DataFrame(all_features).replace([np.inf, -np.inf], 0).fillna(0)
+    y_base = np.array(all_labels)
     
-    # Convert to DataFrame
-    logger.info("\n### Preparing Features ###")
-    df = pd.DataFrame(all_features)
-    df = df.fillna(0)
-    df = df.replace([np.inf, -np.inf], 0)
-    y = np.array(all_labels)
+    logger.info(f"Base samples: {len(df_base)}")
+    logger.info(f"Base features: {len(df_base.columns)}")
+    logger.info(f"Base label distribution: Benign={np.sum(y_base == 0)}, Malicious={np.sum(y_base == 1)}")
     
-    logger.info(f"Total samples: {len(df)}")
-    logger.info(f"Features: {len(df.columns)}")
-    logger.info(f"Label distribution: Benign={np.sum(y == 0)}, Malicious={np.sum(y == 1)}")
-    
-    # Feature Scaling
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(df)
-    X_scaled_df = pd.DataFrame(X_scaled, columns=df.columns)
-
-    # Train-Test Split (stratified to ensure challenge samples in both)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled_df, y, test_size=0.15, random_state=42, stratify=y
+    X_train_base, X_test, y_train_base, y_test = train_test_split(
+        df_base, y_base,
+        test_size=0.15,
+        random_state=42,
+        stratify=y_base
     )
+
+    logger.info(f"\nBase training set: {X_train_base.shape[0]} samples")
+    logger.info(f"Test set (fixed):   {X_test.shape[0]} samples")
     
-    logger.info(f"\nTraining set: {X_train.shape[0]} samples")
-    logger.info(f"Test set: {X_test.shape[0]} samples")
-    
-    # LightGBM Training
-    logger.info("\n### Training LightGBM ###")
-    
-    scale_pos_weight = np.sum(y_train == 0) / np.sum(y_train == 1)
-    
+    # ------------------------------------------------------------------
+    # 3) INITIAL BOOSTER TRAINING ON BASE DATA
+    # ------------------------------------------------------------------
+    logger.info("\n### Training LightGBM Booster (base-only) ###")
+
+    scale_pos_weight = np.sum(y_train_base == 0) / np.sum(y_train_base == 1)
+
     params = {
         'objective': 'binary',
         'metric': ['binary_logloss', 'auc'],
@@ -251,7 +539,6 @@ def train_with_challenge(ember_dir: str, ember2017_dir: str, dike_dir: str, chal
         'num_leaves': 40,
         'max_depth': 12,
         'learning_rate': 0.05,
-        'n_estimators': 500,
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'reg_alpha': 0.3,
@@ -262,45 +549,87 @@ def train_with_challenge(ember_dir: str, ember2017_dir: str, dike_dir: str, chal
         'n_jobs': -1,
         'verbose': -1,
     }
-    
-    logger.info("Training...")
-    model = lgb.LGBMClassifier(**params)
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
-        callbacks=[lgb.early_stopping(stopping_rounds=50), lgb.log_evaluation(period=50)]
+
+    # Align feature space and create LightGBM datasets
+    df_base_train, all_columns = to_aligned_df(X_train_base.to_dict(orient="records"))
+    df_base_test, _ = to_aligned_df(X_test.to_dict(orient="records"), all_columns=all_columns)
+
+    # 🔴 IMPORTANT: keep raw data so we can reuse valid_data in later training calls
+    train_data = lgb.Dataset(df_base_train, label=y_train_base, free_raw_data=False)
+    valid_data = lgb.Dataset(df_base_test, label=y_test, reference=train_data, free_raw_data=False)
+
+    model = lgb.train(
+        params,
+        train_data,
+        num_boost_round=500,
+        valid_sets=[valid_data],
+        callbacks=[
+            lgb.early_stopping(stopping_rounds=50),
+            lgb.log_evaluation(period=50)
+        ]
     )
+
+    # ------------------------------------------------------------------
+    # 4) STREAM EMBER2024 CHUNKS AND CONTINUE TRAINING
+    # ------------------------------------------------------------------
+    if ember2024_dir is not None:
+        chunk_size = ember2024_samples if ember2024_samples is not None else 50000
+        logger.info(f"\n### Streaming EMBER2024 chunks (chunk_size={chunk_size}) ###")
+        
+        for feat_chunk, label_chunk in iter_ember2024_samples_json(ember2024_dir, chunk_size=chunk_size):
+            logger.info(f"Streaming EMBER2024 chunk: {len(label_chunk)} samples")
+
+            df_chunk, _ = to_aligned_df(feat_chunk, all_columns=all_columns)
+
+            # 🔴 IMPORTANT: also keep raw data here
+            train_chunk = lgb.Dataset(df_chunk, label=np.array(label_chunk), free_raw_data=False)
+
+            model = lgb.train(
+                params,
+                train_chunk,
+                num_boost_round=200,
+                init_model=model,
+                valid_sets=[valid_data],
+                callbacks=[
+                    lgb.early_stopping(stopping_rounds=50),
+                    lgb.log_evaluation(period=50)
+                ]
+            )
     
-    # Evaluation
+    # ------------------------------------------------------------------
+    # 5) EVALUATION ON FIXED TEST SET (NO EMBER2024)
+    # ------------------------------------------------------------------
     logger.info("\n### Evaluation ###")
-    y_pred = model.predict(X_test)
-    y_pred_proba = model.predict_proba(X_test)[:, 1]
-    
+
+    y_pred_proba = model.predict(df_base_test)
+    y_pred = (y_pred_proba > 0.5).astype(int)
+
     accuracy = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred)
     auc = roc_auc_score(y_test, y_pred_proba)
-    
+
     tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
-    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
-    
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+
     logger.info(f"Accuracy: {accuracy:.4f}")
     logger.info(f"F1 Score: {f1:.4f}")
     logger.info(f"AUC-ROC: {auc:.4f}")
-    logger.info(f"Confusion Matrix: TN={tn}, FP={fp}, FN={fn}, TP={tp}")
-    logger.info(f"FPR: {fpr:.4f} | FNR: {fnr:.4f}")
+    logger.info(f"FPR: {fpr:.4f}, FNR: {fnr:.4f}")
     
-    # Threshold Optimization
+    # ------------------------------------------------------------------
+    # 6) THRESHOLD OPTIMIZATION
+    # ------------------------------------------------------------------
     logger.info("\n### Threshold Optimization ###")
     
     best_thresh = 0.5
-    best_score = 0
+    best_score = 0.0
     
     for thresh in np.arange(0.05, 0.95, 0.05):
         y_pred_thresh = (y_pred_proba > thresh).astype(int)
         tn, fp, fn, tp = confusion_matrix(y_test, y_pred_thresh).ravel()
-        fpr_t = fp / (fp + tn) if (fp + tn) > 0 else 0
-        fnr_t = fn / (fn + tp) if (fn + tp) > 0 else 0
+        fpr_t = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+        fnr_t = fn / (fn + tp) if (fn + tp) > 0 else 0.0
         
         if fpr_t < 0.01 and fnr_t < 0.10:
             score = 1 - (fpr_t + fnr_t) / 2
@@ -308,39 +637,45 @@ def train_with_challenge(ember_dir: str, ember2017_dir: str, dike_dir: str, chal
             if score > best_score:
                 best_score = score
                 best_thresh = thresh
-        elif fpr_t < 0.05 and fnr_t < 0.15:  # Relaxed constraints
+        elif fpr_t < 0.05 and fnr_t < 0.15:
             logger.info(f"~ Thresh {thresh:.2f}: FPR={fpr_t:.4f}, FNR={fnr_t:.4f}")
     
     logger.info(f"\nBest Threshold: {best_thresh:.2f}")
     
-    # Evaluate with best threshold
     y_pred_best = (y_pred_proba > best_thresh).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_test, y_pred_best).ravel()
-    fpr_best = fp / (fp + tn) if (fp + tn) > 0 else 0
-    fnr_best = fn / (fn + tp) if (fn + tp) > 0 else 0
+    fpr_best = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr_best = fn / (fn + tp) if (fn + tp) > 0 else 0.0
     acc_best = accuracy_score(y_test, y_pred_best)
     
     logger.info(f"With Best Threshold: Acc={acc_best:.4f}, FPR={fpr_best:.4f}, FNR={fnr_best:.4f}")
     
-    # Save Model
+    # ------------------------------------------------------------------
+    # 7) SAVE FINAL MODEL, FEATURE ORDER, THRESHOLD
+    # ------------------------------------------------------------------
     logger.info("\n### Saving Model ###")
-    
-    model_dir = os.path.join(os.path.dirname(__file__), 'defender/models')
+
+    model_dir = os.path.join(os.path.dirname(__file__), "defender/models")
     os.makedirs(model_dir, exist_ok=True)
-    
-    with open(os.path.join(model_dir, 'advanced_model.pkl'), 'wb') as f:
-        pickle.dump(model, f)
-    
-    with open(os.path.join(model_dir, 'advanced_scaler.pkl'), 'wb') as f:
+
+    # Wrap booster into sklearn-compatible class
+    final_model = lgb.LGBMClassifier()
+    final_model._Booster = model
+
+    with open(os.path.join(model_dir, "advanced_model.pkl"), "wb") as f:
+        pickle.dump(final_model, f)
+
+    scaler = None
+    with open(os.path.join(model_dir, "advanced_scaler.pkl"), "wb") as f:
         pickle.dump(scaler, f)
-    
-    with open(os.path.join(model_dir, 'advanced_features.pkl'), 'wb') as f:
-        pickle.dump(list(df.columns), f)
-    
-    with open(os.path.join(model_dir, 'advanced_threshold.pkl'), 'wb') as f:
+
+    with open(os.path.join(model_dir, "advanced_features.pkl"), "wb") as f:
+        pickle.dump(all_columns, f)
+
+    with open(os.path.join(model_dir, "advanced_threshold.pkl"), "wb") as f:
         pickle.dump(best_thresh, f)
-    
-    logger.info(f"Model saved to {model_dir}")
+
+    logger.info(f"Saved all artifacts to {model_dir}")
     
     return {
         'accuracy': acc_best,
@@ -362,6 +697,19 @@ if __name__ == "__main__":
     parser.add_argument('--challenge-goodware', type=str, default='/mnt/c/Users/kotas/Downloads/DACySec/challenge/challenge_ds/goodware')
     parser.add_argument('--challenge-malware', type=str, default='/mnt/c/Users/kotas/Downloads/DACySec/challenge/challenge_ds/malware')    
     parser.add_argument("--ember-samples", type=int, default=30000)
+    parser.add_argument(
+    '--ember2024-dir',
+    type=str,
+    default='/mnt/c/Users/kotas/Downloads/DACySec/EMBER2024/data2',
+    help='Root directory where thrember.download_dataset(file_type=\"PE\") was run'
+    )
+
+    parser.add_argument(
+        '--ember2024-samples',
+        type=int,
+        default=30000,
+        help='How many EMBER2024 samples to stream from JSONL'
+    )
     
     args = parser.parse_args()
     
@@ -371,7 +719,9 @@ if __name__ == "__main__":
         args.dike_dir,
         args.challenge_goodware,
         args.challenge_malware,
-        args.ember_samples
+        args.ember_samples,
+        args.ember2024_dir,
+        args.ember2024_samples
     )
     
     print("\n" + "=" * 80)
